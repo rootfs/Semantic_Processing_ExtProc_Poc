@@ -44,13 +44,28 @@ impl BertSimilarity {
             "main".to_string()  // Use main branch instead of PR/21
         );
 
-        let (config_filename, tokenizer_filename, weights_filename) = {
+        let (config_filename, tokenizer_filename, weights_filename, use_pth) = {
             let api = Api::new()?;
             let api = api.repo(repo);
             let config = api.get("config.json")?;
             let tokenizer = api.get("tokenizer.json")?;
-            let weights = api.get("model.safetensors")?;
-            (config, tokenizer, weights)
+
+            // Try to get safetensors first, if that fails, fall back to pytorch_model.bin. This is for BAAI models
+            // create a special case for BAAI to download the correct weights to avoid downloading the wrong weights
+            let (weights, use_pth) = if model_id.starts_with("BAAI/") {
+                // BAAI models typically use PyTorch model format
+                (api.get("pytorch_model.bin")?, true)
+            } else {
+                match api.get("model.safetensors") {
+                    Ok(weights) => (weights, false),
+                    Err(_) => {
+                        println!("Safetensors model not found, trying PyTorch model instead...");
+                        (api.get("pytorch_model.bin")?, true)
+                    }
+                }
+            };
+
+            (config, tokenizer, weights, use_pth)
         };
 
         let config = std::fs::read_to_string(config_filename)?;
@@ -60,7 +75,12 @@ impl BertSimilarity {
         // Use the approximate GELU for better performance
         config.hidden_act = HiddenAct::GeluApproximate;
 
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? };
+        let vb = if use_pth {
+            VarBuilder::from_pth(&weights_filename, DTYPE, &device)?
+        } else {
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? }
+        };
+
         let model = BertModel::load(vb, &config)?;
 
         Ok(Self {
@@ -173,6 +193,82 @@ pub struct SimilarityResult {
     pub score: f32,  // Similarity score
 }
 
+// Structure to hold embedding result
+#[repr(C)]
+pub struct EmbeddingResult {
+    pub data: *mut f32,
+    pub length: i32,
+    pub error: bool,
+}
+
+// Get embedding for a text (called from Go)
+#[no_mangle]
+pub extern "C" fn get_text_embedding(text: *const c_char) -> EmbeddingResult {
+    let text = unsafe {
+        match CStr::from_ptr(text).to_str() {
+            Ok(s) => s,
+            Err(_) => return EmbeddingResult {
+                data: std::ptr::null_mut(),
+                length: 0,
+                error: true
+            },
+        }
+    };
+
+    let bert_opt = BERT_SIMILARITY.lock().unwrap();
+    let bert = match &*bert_opt {
+        Some(b) => b,
+        None => {
+            eprintln!("BERT model not initialized");
+            return EmbeddingResult {
+                data: std::ptr::null_mut(),
+                length: 0,
+                error: true
+            };
+        }
+    };
+
+    match bert.get_embedding(text) {
+        Ok(embedding) => {
+            match embedding.flatten_all() {
+                Ok(flat_embedding) => {
+                    match flat_embedding.to_vec1::<f32>() {
+                        Ok(vec) => {
+                            let length = vec.len() as i32;
+                            // Allocate memory that will be freed by Go
+                            let data = vec.as_ptr() as *mut f32;
+                            std::mem::forget(vec); // Don't drop the vector - Go will own the memory now
+                            EmbeddingResult {
+                                data,
+                                length,
+                                error: false
+                            }
+                        },
+                        Err(_) => EmbeddingResult {
+                            data: std::ptr::null_mut(),
+                            length: 0,
+                            error: true
+                        }
+                    }
+                },
+                Err(_) => EmbeddingResult {
+                    data: std::ptr::null_mut(),
+                    length: 0,
+                    error: true
+                }
+            }
+        },
+        Err(e) => {
+            eprintln!("Error getting embedding: {}", e);
+            EmbeddingResult {
+                data: std::ptr::null_mut(),
+                length: 0,
+                error: true
+            }
+        }
+    }
+}
+
 // Calculate similarity between two texts (called from Go)
 #[no_mangle]
 pub extern "C" fn calculate_similarity(text1: *const c_char, text2: *const c_char) -> f32 {
@@ -264,6 +360,18 @@ pub extern "C" fn free_cstring(s: *mut c_char) {
     unsafe {
         if !s.is_null() {
             let _ = CString::from_raw(s);
+        }
+    }
+}
+
+// Free embedding data allocated by Rust
+#[no_mangle]
+pub extern "C" fn free_embedding(data: *mut f32, length: i32) {
+    if !data.is_null() && length > 0 {
+        unsafe {
+            // Reconstruct the vector so that Rust can properly deallocate it
+            let _vec = Vec::from_raw_parts(data, length as usize, length as usize);
+            // The vector will be dropped and the memory freed when _vec goes out of scope
         }
     }
 }

@@ -22,8 +22,17 @@ typedef struct {
     float score;
 } SimilarityResult;
 
+// Embedding result structure
+typedef struct {
+    float* data;
+    int length;
+    bool error;
+} EmbeddingResult;
+
 extern SimilarityResult find_most_similar(const char* query, const char** candidates, int num_candidates);
+extern EmbeddingResult get_text_embedding(const char* text);
 extern void free_cstring(char* s);
+extern void free_embedding(float* data, int length);
 */
 import "C"
 
@@ -69,6 +78,41 @@ func InitModel(modelID string, useCPU bool) error {
 	}
 
 	return err
+}
+
+// GetEmbedding gets the embedding vector for a text
+func GetEmbedding(text string) ([]float32, error) {
+	if !modelInitialized {
+		return nil, fmt.Errorf("BERT model not initialized")
+	}
+
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+
+	result := C.get_text_embedding(cText)
+
+	if bool(result.error) {
+		return nil, fmt.Errorf("failed to generate embedding")
+	}
+
+	// Convert the C array to a Go slice
+	length := int(result.length)
+	embedding := make([]float32, length)
+
+	if length > 0 {
+		// Create a slice that refers to the C array
+		cFloats := (*[1 << 30]C.float)(unsafe.Pointer(result.data))[:length:length]
+
+		// Copy and convert each value
+		for i := 0; i < length; i++ {
+			embedding[i] = float32(cFloats[i])
+		}
+
+		// Free the memory allocated in Rust
+		C.free_embedding(result.data, result.length)
+	}
+
+	return embedding, nil
 }
 
 // CalculateSimilarity calculates the similarity between two texts

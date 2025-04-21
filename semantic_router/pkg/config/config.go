@@ -22,6 +22,33 @@ type RouterConfig struct {
 
 	// Default LLM model to use if no match is found
 	DefaultModel string `yaml:"default_model"`
+
+	// Semantic cache configuration
+	SemanticCache SemanticCacheConfig `yaml:"semantic_cache"`
+}
+
+// SemanticCacheConfig represents configuration for the semantic cache
+type SemanticCacheConfig struct {
+	// Enable semantic caching
+	Enabled bool `yaml:"enabled"`
+
+	// Similarity threshold for cache hits (0.0-1.0)
+	// If not specified, will use the BertModel.Threshold
+	SimilarityThreshold *float32 `yaml:"similarity_threshold,omitempty"`
+
+	// Maximum number of cache entries to keep
+	MaxEntries int `yaml:"max_entries,omitempty"`
+
+	// Time-to-live for cache entries in seconds (0 means no expiration)
+	TTLSeconds int `yaml:"ttl_seconds,omitempty"`
+}
+
+// GetCacheSimilarityThreshold returns the effective threshold for the semantic cache
+func (c *RouterConfig) GetCacheSimilarityThreshold() float32 {
+	if c.SemanticCache.SimilarityThreshold != nil {
+		return *c.SemanticCache.SimilarityThreshold
+	}
+	return c.BertModel.Threshold
 }
 
 // Category represents a category of tasks

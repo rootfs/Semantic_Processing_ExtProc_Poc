@@ -11,9 +11,12 @@ import (
 	"sync"
 	"syscall"
 
+	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	ext_proc "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 
 	candle_binding "github.com/neuralmagic/semantic_router_poc/candle-binding"
+	"github.com/neuralmagic/semantic_router_poc/semantic_router/pkg/cache"
 	"github.com/neuralmagic/semantic_router_poc/semantic_router/pkg/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -29,6 +32,10 @@ var (
 type OpenAIRouter struct {
 	Config           *config.RouterConfig
 	TaskDescriptions []string
+	Cache            *cache.SemanticCache
+	// Map to track pending requests and their unique IDs
+	pendingRequests     map[string][]byte
+	pendingRequestsLock sync.Mutex
 }
 
 // Ensure OpenAIRouter implements the ext_proc calls
@@ -56,7 +63,28 @@ func NewOpenAIRouter(configPath string) (*OpenAIRouter, error) {
 	taskDescriptions := cfg.GetTaskDescriptions()
 	log.Printf("Task descriptions: %v", taskDescriptions)
 
-	return &OpenAIRouter{Config: cfg, TaskDescriptions: taskDescriptions}, nil
+	// Create semantic cache with config options
+	cacheOptions := cache.SemanticCacheOptions{
+		SimilarityThreshold: cfg.GetCacheSimilarityThreshold(),
+		MaxEntries:          cfg.SemanticCache.MaxEntries,
+		TTLSeconds:          cfg.SemanticCache.TTLSeconds,
+		Enabled:             cfg.SemanticCache.Enabled,
+	}
+	semanticCache := cache.NewSemanticCache(cacheOptions)
+
+	if semanticCache.IsEnabled() {
+		log.Printf("Semantic cache enabled with threshold: %.4f, max entries: %d, TTL: %d seconds",
+			cacheOptions.SimilarityThreshold, cacheOptions.MaxEntries, cacheOptions.TTLSeconds)
+	} else {
+		log.Println("Semantic cache is disabled")
+	}
+
+	return &OpenAIRouter{
+		Config:           cfg,
+		TaskDescriptions: taskDescriptions,
+		Cache:            semanticCache,
+		pendingRequests:  make(map[string][]byte),
+	}, nil
 }
 
 // Send a response with proper error handling and logging
@@ -74,6 +102,10 @@ func sendResponse(stream ext_proc.ExternalProcessor_ProcessServer, response *ext
 func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) error {
 	log.Println("Started processing a new request")
 	requestHeaders := make(map[string]string)
+	var requestID string
+	var originalRequestBody []byte
+	var requestModel string
+	var requestQuery string
 
 	for {
 		req, err := stream.Recv()
@@ -88,10 +120,14 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 		case *ext_proc.ProcessingRequest_RequestHeaders:
 			log.Println("Received request headers")
 
-			// Store headers for later use (since we need to modify the request length)
+			// Store headers for later use
 			headers := v.RequestHeaders.Headers
 			for _, h := range headers.Headers {
 				requestHeaders[h.Key] = h.Value
+				// Store request ID if present
+				if strings.ToLower(h.Key) == "x-request-id" {
+					requestID = h.Value
+				}
 			}
 
 			// Allow the request to continue
@@ -112,9 +148,11 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 		case *ext_proc.ProcessingRequest_RequestBody:
 			log.Println("Received request body")
 
+			// Save the original request body
+			originalRequestBody = v.RequestBody.Body
+
 			// Parse the OpenAI request
-			body := v.RequestBody.Body
-			openAIRequest, err := parseOpenAIRequest(body)
+			openAIRequest, err := parseOpenAIRequest(originalRequestBody)
 			if err != nil {
 				log.Printf("Error parsing OpenAI request: %v", err)
 				return status.Errorf(codes.InvalidArgument, "invalid request body: %v", err)
@@ -131,6 +169,67 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 					userContent = msg.Content
 				} else if msg.Role != "" {
 					nonUserMessages = append(nonUserMessages, msg.Content)
+				}
+			}
+
+			// Extract the model and query for cache lookup
+			requestModel, requestQuery, err = cache.ExtractQueryFromOpenAIRequest(originalRequestBody)
+			if err != nil {
+				log.Printf("Error extracting query from request: %v", err)
+				// Continue without caching
+			} else if requestQuery != "" && r.Cache.IsEnabled() {
+				// Try to find a similar cached response
+				cachedResponse, found, err := r.Cache.FindSimilar(requestModel, requestQuery)
+				if err != nil {
+					log.Printf("Error searching cache: %v", err)
+				} else if found {
+					log.Printf("Cache hit! Returning cached response for query: %s", requestQuery)
+
+					// Return immediate response from cache
+					immediateResponse := &ext_proc.ImmediateResponse{
+						Status: &typev3.HttpStatus{
+							Code: typev3.StatusCode_OK,
+						},
+						Headers: &ext_proc.HeaderMutation{
+							SetHeaders: []*core.HeaderValueOption{
+								{
+									Header: &core.HeaderValue{
+										Key:   "content-type",
+										Value: "application/json",
+									},
+								},
+								{
+									Header: &core.HeaderValue{
+										Key:   "x-cache-hit",
+										Value: "true",
+									},
+								},
+							},
+						},
+						Body: cachedResponse,
+					}
+
+					response := &ext_proc.ProcessingResponse{
+						Response: &ext_proc.ProcessingResponse_ImmediateResponse{
+							ImmediateResponse: immediateResponse,
+						},
+					}
+
+					if err := sendResponse(stream, response, "immediate response from cache"); err != nil {
+						return err
+					}
+					return nil
+				}
+
+				// Cache miss, store the request for later
+				cacheID, err := r.Cache.AddPendingRequest(requestModel, requestQuery, originalRequestBody)
+				if err != nil {
+					log.Printf("Error adding pending request to cache: %v", err)
+				} else {
+					r.pendingRequestsLock.Lock()
+					r.pendingRequests[requestID] = []byte(cacheID)
+					r.pendingRequestsLock.Unlock()
+					log.Printf("Added pending request with ID: %s, cacheID: %s", requestID, cacheID)
 				}
 			}
 
@@ -220,6 +319,28 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 
 		case *ext_proc.ProcessingRequest_ResponseBody:
 			log.Println("Received response body")
+
+			// Process the response for caching
+			responseBody := v.ResponseBody.Body
+
+			// Check if this request has a pending cache entry
+			r.pendingRequestsLock.Lock()
+			cacheID, exists := r.pendingRequests[requestID]
+			if exists {
+				delete(r.pendingRequests, requestID)
+			}
+			r.pendingRequestsLock.Unlock()
+
+			// If we have a pending request, update the cache
+			if exists && requestQuery != "" && responseBody != nil {
+				err := r.Cache.UpdateWithResponse(string(cacheID), responseBody)
+				if err != nil {
+					log.Printf("Error updating cache: %v", err)
+					// Continue even if cache update fails
+				} else {
+					log.Printf("Cache updated for request ID: %s", requestID)
+				}
+			}
 
 			// Allow the response to continue without modification
 			response := &ext_proc.ProcessingResponse{

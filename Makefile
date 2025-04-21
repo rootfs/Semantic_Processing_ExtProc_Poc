@@ -118,15 +118,15 @@ test-prompt:
 	@echo "Testing Envoy extproc with curl (Math)..."
 	curl -X POST http://localhost:8801/v1/chat/completions \
 		-H "Content-Type: application/json" \
-		-d '{"model": "qwen2.5:32b", "messages": [{"role": "assistant", "content": "You are a professional math teacher. Explain math concepts clearly and show step-by-step solutions to problems."}, {"role": "user", "content": "What is the derivative of f(x) = x^3 + 2x^2 - 5x + 7?"}], "temperature": 0.7}' | jq
+		-d '{"model": "qwen2.5:32b", "messages": [{"role": "assistant", "content": "You are a professional math teacher. Explain math concepts clearly and show step-by-step solutions to problems."}, {"role": "user", "content": "What is the derivative of f(x) = x^3 + 2x^2 - 5x + 7?"}], "temperature": 0.7}'
 	@echo "Testing Envoy extproc with curl (Creative Writing)..."
 	curl -X POST http://localhost:8801/v1/chat/completions \
 		-H "Content-Type: application/json" \
-		-d '{"model": "qwen2.5:32b", "messages": [{"role": "assistant", "content": "You are a story writer. Create interesting stories with good characters and settings."}, {"role": "user", "content": "Write a short story about a space cat."}], "temperature": 0.7}' | jq
+		-d '{"model": "qwen2.5:32b", "messages": [{"role": "assistant", "content": "You are a story writer. Create interesting stories with good characters and settings."}, {"role": "user", "content": "Write a short story about a space cat."}], "temperature": 0.7}'
 	@echo "Testing Envoy extproc with curl (Default/General)..."
 	curl -X POST http://localhost:8801/v1/chat/completions \
 		-H "Content-Type: application/json" \
-		-d '{"model": "qwen2.5:32b", "messages": [{"role": "assistant", "content": "You are a helpful assistant."}, {"role": "user", "content": "What is the capital of France?"}], "temperature": 0.7}' | jq
+		-d '{"model": "qwen2.5:32b", "messages": [{"role": "assistant", "content": "You are a helpful assistant."}, {"role": "user", "content": "What is the capital of France?"}], "temperature": 0.7}'
 
 test-vllm:
 	curl -X POST $(VLLM_ENDPOINT)/v1/chat/completions \

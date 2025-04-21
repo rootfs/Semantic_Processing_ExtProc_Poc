@@ -26,15 +26,22 @@ var testModels = []struct {
 	modelID string
 	size    string // Model size category for comparison
 }{
+	// per https://huggingface.co/models?pipeline_tag=sentence-similarity&sort=downloads
+	// TF models like bert-base-uncased are not supported by candle yet, need to convert to pytorch through https://github.com/huggingface/transformers/blob/main/src/transformers/models/bert/convert_bert_original_tf_checkpoint_to_pytorch.py
 	{
-		name:    "MiniLM-L6",
-		modelID: "sentence-transformers/all-MiniLM-L6-v2",
+		name:    "Paraphrase-multilingual-MiniLM-L12-v2",
+		modelID: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
 		size:    "small",
 	},
 	{
 		name:    "MiniLM-L12",
 		modelID: "sentence-transformers/all-MiniLM-L12-v2",
 		size:    "medium",
+	},
+	{
+		name:    "BGE-large",
+		modelID: "BAAI/bge-large-zh-v1.5",
+		size:    "large",
 	},
 }
 
@@ -101,41 +108,6 @@ func initBERTModel(t *testing.T, modelID string, useCPU bool) bool {
 
 	fmt.Printf("Model successfully initialized\n")
 	return true
-}
-
-func TestCalculateSimilarity(t *testing.T) {
-	if !initBERTModel(t, "sentence-transformers/all-MiniLM-L6-v2", true) {
-		return
-	}
-
-	testCases := []struct {
-		name  string
-		text1 string
-		text2 string
-	}{
-		{
-			name:  "Similar texts",
-			text1: "I love machine learning",
-			text2: "I enjoy artificial intelligence",
-		},
-		{
-			name:  "Identical texts",
-			text1: "This is a test sentence",
-			text2: "This is a test sentence",
-		},
-		{
-			name:  "Different texts",
-			text1: "The weather is nice today",
-			text2: "Machine learning models is fun",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := CalculateSimilarity(tc.text1, tc.text2)
-			t.Logf("Similarity between '%s' and '%s': %f", tc.text1, tc.text2, result)
-		})
-	}
 }
 
 // TestModelBenchmarking tests different models for accuracy and performance
@@ -226,16 +198,15 @@ func TestModelBenchmarking(t *testing.T) {
 
 	// Print summary table
 	t.Log("\n====== BENCHMARK RESULTS ======")
-	t.Log("Model\tSize\tDevice\tAvg Latency (ms)\tInit Time (ms)")
+	t.Log("Model\tSize\tDevice\tInit Time (ms)")
 
 	for _, model := range testModels {
 		for _, device := range devices {
 			if metrics, ok := results[model.name][device.name]; ok && len(metrics) > 0 {
-				avgLatency := results[model.name][device.name]["avg_latency_ms"]
 				initTime := results[model.name][device.name]["init_ms"]
 
-				t.Logf("%s\t%s\t%s\t%.2f\t%.2f",
-					model.name, model.size, device.name, avgLatency, initTime)
+				t.Logf("%s\t%s\t%s\t%.2f",
+					model.name, model.size, device.name, initTime)
 			}
 		}
 	}
@@ -255,38 +226,6 @@ func printComparativeTables(t *testing.T, results map[string]map[string]map[stri
 	if len(results) == 0 {
 		t.Log("\nNot enough data for comparative analysis")
 		return
-	}
-
-	// Model Loading Time Comparison
-	t.Log("\n====== MODEL LOADING TIME COMPARISON ======")
-	t.Log("Model\t\tSize\t\tCPU (ms)\tGPU (ms)")
-	t.Log("-----------------------------------------------")
-
-	for _, model := range models {
-		cpuInitTime := -1.0
-		gpuInitTime := -1.0
-
-		for _, device := range devices {
-			if metrics, ok := results[model.name][device.name]; ok && len(metrics) > 0 {
-				if device.useCPU {
-					cpuInitTime = metrics["init_ms"]
-				} else {
-					gpuInitTime = metrics["init_ms"]
-				}
-			}
-		}
-
-		cpuStr := "N/A"
-		if cpuInitTime > 0 {
-			cpuStr = fmt.Sprintf("%.2f", cpuInitTime)
-		}
-
-		gpuStr := "N/A"
-		if gpuInitTime > 0 {
-			gpuStr = fmt.Sprintf("%.2f", gpuInitTime)
-		}
-
-		t.Logf("%-15s\t%-10s\t%-10s\t%-10s", model.name, model.size, cpuStr, gpuStr)
 	}
 }
 

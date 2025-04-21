@@ -1,10 +1,12 @@
+# BERT model configuration for semantic similarity
 bert_model:
-  model_id: "sentence-transformers/all-MiniLM-L12-v2"
-  threshold: 0.6
+  model_id: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  threshold: 0.75
   use_cpu: true
 
 default_model: "mistral-small3.1"
 
+# Categories and tasks for model routing
 categories:
   - name: "STEM"
     description: "Science, Technology, Engineering, and Mathematics topics"
@@ -30,3 +32,10 @@ categories:
       - name: "Brainstorming"
         description: "Generate creative ideas for projects, marketing, or problem solving"
         typical_prompt: "You are an idea generator. Come up with creative ideas for different projects and problems."
+
+# Semantic cache configuration
+semantic_cache:
+  enabled: true
+  similarity_threshold: 0.80 
+  max_entries: 1000
+  ttl_seconds: 3600
