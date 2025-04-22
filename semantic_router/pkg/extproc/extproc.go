@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	ext_proc "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -18,6 +19,7 @@ import (
 	candle_binding "github.com/neuralmagic/semantic_router_poc/candle-binding"
 	"github.com/neuralmagic/semantic_router_poc/semantic_router/pkg/cache"
 	"github.com/neuralmagic/semantic_router_poc/semantic_router/pkg/config"
+	"github.com/neuralmagic/semantic_router_poc/semantic_router/pkg/metrics"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -106,6 +108,8 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 	var originalRequestBody []byte
 	var requestModel string
 	var requestQuery string
+	var startTime time.Time
+	var processingStartTime time.Time
 
 	for {
 		req, err := stream.Recv()
@@ -118,6 +122,8 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 
 		switch v := req.Request.(type) {
 		case *ext_proc.ProcessingRequest_RequestHeaders:
+			// Record start time for overall request processing
+			startTime = time.Now()
 			log.Println("Received request headers")
 
 			// Store headers for later use
@@ -147,7 +153,8 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 
 		case *ext_proc.ProcessingRequest_RequestBody:
 			log.Println("Received request body")
-
+			// Record start time for model routing
+			processingStartTime = time.Now()
 			// Save the original request body
 			originalRequestBody = v.RequestBody.Body
 
@@ -158,7 +165,12 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 				return status.Errorf(codes.InvalidArgument, "invalid request body: %v", err)
 			}
 
-			log.Printf("Original model: %s", openAIRequest.Model)
+			// Store the original model
+			originalModel := openAIRequest.Model
+			log.Printf("Original model: %s", originalModel)
+
+			// Record the initial request to this model
+			metrics.RecordModelRequest(originalModel)
 
 			// Get content from messages
 			var userContent string
@@ -247,17 +259,24 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 			// The user content could be very long and not relevant to the task,
 			// so we only use non-user messages (aka system, assistant, etc)
 			// If there are non-user messages, use BERT to find the best model
+			actualModel := originalModel
 			if len(nonUserMessages) > 0 && userContent != "" {
 				// Add all non-user messages to get context
 				nonUserContent := strings.Join(nonUserMessages, " ")
 
 				// Find the most similar task description
-				bestMatch := r.findBestModelMatch(nonUserContent)
-				if bestMatch != openAIRequest.Model && bestMatch != "" {
-					log.Printf("Routing to model: %s", bestMatch)
+				matchedModel := r.findBestModelMatch(nonUserContent)
+				if matchedModel != originalModel && matchedModel != "" {
+					log.Printf("Routing to model: %s", matchedModel)
+
+					// Track the model routing change
+					metrics.RecordModelRouting(originalModel, matchedModel)
+
+					// Update the actual model that will be used
+					actualModel = matchedModel
 
 					// Modify the model in the request
-					openAIRequest.Model = bestMatch
+					openAIRequest.Model = matchedModel
 
 					// Serialize the modified request
 					modifiedBody, err := json.Marshal(openAIRequest)
@@ -291,9 +310,16 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 						},
 					}
 
-					log.Printf("Use new model: %s", bestMatch)
+					log.Printf("Use new model: %s", matchedModel)
 				}
 			}
+
+			// Save the actual model that will be used for token tracking
+			requestModel = actualModel
+
+			// Record the routing latency
+			routingLatency := time.Since(processingStartTime)
+			metrics.RecordModelRoutingLatency(routingLatency.Seconds())
 
 			if err := sendResponse(stream, response, "body"); err != nil {
 				return err
@@ -318,10 +344,27 @@ func (r *OpenAIRouter) Process(stream ext_proc.ExternalProcessor_ProcessServer) 
 			}
 
 		case *ext_proc.ProcessingRequest_ResponseBody:
+			completionLatency := time.Since(startTime)
 			log.Println("Received response body")
 
 			// Process the response for caching
 			responseBody := v.ResponseBody.Body
+
+			// Parse tokens from the response JSON
+			promptTokens, completionTokens, _, err := parseTokensFromResponse(responseBody)
+			if err != nil {
+				log.Printf("Error parsing tokens from response: %v", err)
+			}
+
+			// Record tokens used with the model that was used
+			if requestModel != "" {
+				metrics.RecordModelTokensDetailed(
+					requestModel,
+					float64(promptTokens),
+					float64(completionTokens),
+				)
+				metrics.RecordModelCompletionLatency(requestModel, completionLatency.Seconds())
+			}
 
 			// Check if this request has a pending cache entry
 			r.pendingRequestsLock.Lock()
@@ -418,6 +461,41 @@ func parseOpenAIRequest(data []byte) (*OpenAIRequest, error) {
 		return nil, err
 	}
 	return &req, nil
+}
+
+// OpenAIResponse represents an OpenAI API response
+type OpenAIResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	Model   string `json:"model"`
+	Usage   struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+// parseTokensFromResponse extracts detailed token counts from the OpenAI schema based response JSON
+func parseTokensFromResponse(responseBody []byte) (promptTokens, completionTokens, totalTokens int, err error) {
+	if responseBody == nil {
+		return 0, 0, 0, fmt.Errorf("empty response body")
+	}
+
+	var response OpenAIResponse
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return 0, 0, 0, fmt.Errorf("failed to parse response JSON: %w", err)
+	}
+
+	// Extract token counts from the usage field
+	promptTokens = response.Usage.PromptTokens
+	completionTokens = response.Usage.CompletionTokens
+	totalTokens = response.Usage.TotalTokens
+
+	log.Printf("Parsed token usage from response: total=%d (prompt=%d, completion=%d)",
+		totalTokens, promptTokens, completionTokens)
+
+	return promptTokens, completionTokens, totalTokens, nil
 }
 
 // Server represents a gRPC server for the Envoy ExtProc

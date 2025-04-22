@@ -54,7 +54,7 @@ static_resources:
                 request_body_mode: "BUFFERED"
                 response_body_mode: "BUFFERED"
               failure_mode_allow: true
-              message_timeout: 60s
+              message_timeout: 90s
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -62,7 +62,7 @@ static_resources:
 
   clusters:
   - name: extproc_service
-    connect_timeout: 30s
+    connect_timeout: 90s
     type: STATIC
     lb_policy: ROUND_ROBIN
     typed_extension_protocol_options:
@@ -71,8 +71,8 @@ static_resources:
         explicit_http_config:
           http2_protocol_options:
             connection_keepalive:
-              interval: 60s
-              timeout: 60s
+              interval: 90s
+              timeout: 90s
     load_assignment:
       cluster_name: extproc_service
       endpoints:
@@ -84,7 +84,7 @@ static_resources:
                 port_value: 50051
   
   - name: vllm_backend
-    connect_timeout: 60s
+    connect_timeout: 90s
     type: STRICT_DNS
     lb_policy: ROUND_ROBIN
     typed_extension_protocol_options:

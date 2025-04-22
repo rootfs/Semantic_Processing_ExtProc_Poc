@@ -2,17 +2,21 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/neuralmagic/semantic_router_poc/semantic_router/pkg/extproc"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
 	// Parse command-line flags
 	var (
-		configPath = flag.String("config", "config/config.yaml", "Path to the configuration file")
-		port       = flag.Int("port", 50051, "Port to listen on")
+		configPath  = flag.String("config", "config/config.yaml", "Path to the configuration file")
+		port        = flag.Int("port", 50051, "Port to listen on")
+		metricsPort = flag.Int("metrics-port", 9090, "Port for Prometheus metrics")
 	)
 	flag.Parse()
 
@@ -20,6 +24,16 @@ func main() {
 	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
 		log.Fatalf("Config file not found: %s", *configPath)
 	}
+
+	// Start metrics server
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		metricsAddr := fmt.Sprintf(":%d", *metricsPort)
+		log.Printf("Starting metrics server on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, nil); err != nil {
+			log.Printf("Metrics server error: %v", err)
+		}
+	}()
 
 	// Create and start the server
 	server, err := extproc.NewServer(*configPath, *port)

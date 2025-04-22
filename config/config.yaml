@@ -1,7 +1,8 @@
 # BERT model configuration for semantic similarity
 bert_model:
-  model_id: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-  threshold: 0.75
+  #model_id: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  model_id: "sentence-transformers/all-MiniLM-L12-v2"
+  threshold: 0.6
   use_cpu: true
 
 default_model: "mistral-small3.1"
