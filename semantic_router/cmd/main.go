@@ -16,7 +16,7 @@ func main() {
 	var (
 		configPath  = flag.String("config", "config/config.yaml", "Path to the configuration file")
 		port        = flag.Int("port", 50051, "Port to listen on")
-		metricsPort = flag.Int("metrics-port", 9090, "Port for Prometheus metrics")
+		metricsPort = flag.Int("metrics-port", 9190, "Port for Prometheus metrics")
 	)
 	flag.Parse()
 

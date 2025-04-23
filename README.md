@@ -4,6 +4,10 @@ An Envoy External Processor (ExtProc) that acts as an external **Mixture-of-Mode
 
 The detailed design doc can be found [here](https://docs.google.com/document/d/1BwwRxdf74GuCdG1veSApzMRMJhXeUWcw0wH9YRAmgGw/edit?usp=sharing).
 
+The screenshot below shows the LLM Router dashboard in Grafana.
+
+![LLM Router Dashboard](./docs/grafana_screenshot.png)
+
 The router is implemented in two ways: Golang (with Rust FFI based on Candle) and Python. Benchmarking will be conducted to determine the best implementation.
 
 ## Usage
