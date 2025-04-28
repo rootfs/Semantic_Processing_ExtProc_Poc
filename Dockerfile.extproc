@@ -1,0 +1,45 @@
+# Build the Rust library for the candle-binding module
+FROM rust:1.85 as rust-builder
+
+WORKDIR /app
+COPY candle-binding/Cargo.toml candle-binding/
+COPY candle-binding/src/ candle-binding/src/
+
+WORKDIR /app/candle-binding
+RUN cargo build --release
+
+# Build the Go application
+FROM golang:1.24 as go-builder
+
+WORKDIR /app
+COPY semantic_router/go.mod semantic_router/go.sum* ./
+
+# Create the directory for the candle-binding module
+RUN mkdir /app/candle-binding
+# Copy only the necessary Go files and go.mod for the candle-binding module
+COPY candle-binding/go.mod candle-binding/semantic_router.go /app/candle-binding/
+
+COPY semantic_router/ ./semantic_router/
+
+# Copy the .so file from the rust-builder for CGO
+COPY --from=rust-builder /app/candle-binding/target/release/libcandle_semantic_router.so /app/lib/
+# Set environment for CGO to find the library
+ENV CGO_LDFLAGS="-L/app/lib"
+ENV CGO_ENABLED=1
+
+RUN cd /app/semantic_router && go build -o extproc-server ./cmd/main.go
+
+# Final stage: copy the binary and the shared library
+FROM quay.io/centos/centos:stream9
+
+WORKDIR /app
+
+COPY --from=go-builder /app/semantic_router/extproc-server /app/
+COPY --from=go-builder /app/lib/libcandle_semantic_router.so /app/lib/
+COPY config/config.yaml /app/config/
+
+ENV LD_LIBRARY_PATH=/app/lib
+
+EXPOSE 50051
+
+CMD ["/app/extproc-server", "--config", "/app/config/config.yaml"] 
