@@ -10,6 +10,9 @@ use candle_nn::{VarBuilder};
 use candle_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
+use tokenizers::TruncationParams;
+use tokenizers::TruncationStrategy;
+use tokenizers::TruncationDirection;
 
 // Structure to hold BERT model and tokenizer for semantic similarity
 pub struct BertSimilarity {
@@ -20,6 +23,15 @@ pub struct BertSimilarity {
 
 lazy_static::lazy_static! {
     static ref BERT_SIMILARITY: Arc<Mutex<Option<BertSimilarity>>> = Arc::new(Mutex::new(None));
+}
+
+// Structure to hold tokenization result
+#[repr(C)]
+pub struct TokenizationResult {
+    pub token_ids: *mut i32,
+    pub token_count: i32,
+    pub tokens: *mut *mut c_char,
+    pub error: bool,
 }
 
 impl BertSimilarity {
@@ -90,11 +102,39 @@ impl BertSimilarity {
         })
     }
 
-    // Get embedding for a text
-    pub fn get_embedding(&self, text: &str) -> Result<Tensor> {
+    // Tokenize a text string
+    pub fn tokenize_text(&self, text: &str, max_length: Option<usize>) -> Result<(Vec<i32>, Vec<String>)> {
         // Encode the text with the tokenizer
-        let encoding = self.tokenizer
-            .encode(text, true)
+        let mut tokenizer = self.tokenizer.clone();
+        tokenizer.with_truncation(Some(TruncationParams {
+            max_length: max_length.unwrap_or(512),
+            strategy: TruncationStrategy::LongestFirst,
+            stride: 0,
+            direction: TruncationDirection::Right,
+        })).map_err(E::msg)?;
+        
+        let encoding = tokenizer.encode(text, true)
+            .map_err(E::msg)?;
+        
+        // Get token IDs and tokens
+        let token_ids = encoding.get_ids().iter().map(|&id| id as i32).collect();
+        let tokens = encoding.get_tokens().to_vec();
+        
+        Ok((token_ids, tokens))
+    }
+
+    // Get embedding for a text
+    pub fn get_embedding(&self, text: &str, max_length: Option<usize>) -> Result<Tensor> {
+        // Encode the text with the tokenizer
+        let mut tokenizer = self.tokenizer.clone();
+        tokenizer.with_truncation(Some(TruncationParams {
+            max_length: max_length.unwrap_or(512),
+            strategy: TruncationStrategy::LongestFirst,
+            stride: 0,
+            direction: TruncationDirection::Right,
+        })).map_err(E::msg)?;
+        
+        let encoding = tokenizer.encode(text, true)
             .map_err(E::msg)?;
         
         // Get token IDs and attention mask
@@ -121,9 +161,9 @@ impl BertSimilarity {
     }
 
     // Calculate cosine similarity between two texts
-    pub fn calculate_similarity(&self, text1: &str, text2: &str) -> Result<f32> {
-        let embedding1 = self.get_embedding(text1)?;
-        let embedding2 = self.get_embedding(text2)?;
+    pub fn calculate_similarity(&self, text1: &str, text2: &str, max_length: Option<usize>) -> Result<f32> {
+        let embedding1 = self.get_embedding(text1, max_length)?;
+        let embedding2 = self.get_embedding(text2, max_length)?;
         
         // For normalized vectors, dot product equals cosine similarity
         let dot_product = embedding1.matmul(&embedding2.transpose(0, 1)?)?;
@@ -135,19 +175,19 @@ impl BertSimilarity {
     }
 
     // Find most similar text from a list
-    pub fn find_most_similar(&self, query_text: &str, candidates: &[&str]) -> Result<(usize, f32)> {
+    pub fn find_most_similar(&self, query_text: &str, candidates: &[&str], max_length: Option<usize>) -> Result<(usize, f32)> {
         if candidates.is_empty() {
             return Err(E::msg("Empty candidate list"));
         }
         
-        let query_embedding = self.get_embedding(query_text)?;
+        let query_embedding = self.get_embedding(query_text, max_length)?;
         
         // Calculate similarity for each candidate individually
         let mut best_idx = 0;
         let mut best_score = -1.0;
         
         for (idx, candidate) in candidates.iter().enumerate() {
-            let candidate_embedding = self.get_embedding(candidate)?;
+            let candidate_embedding = self.get_embedding(candidate, max_length)?;
             
             // Calculate similarity (dot product of normalized vectors = cosine similarity)
             let sim = query_embedding.matmul(&candidate_embedding.transpose(0, 1)?)?;
@@ -160,6 +200,102 @@ impl BertSimilarity {
         }
         
         Ok((best_idx, best_score))
+    }
+}
+
+/// Tokenize the input text and return a `TokenizationResult` containing token IDs and tokens.
+///
+/// # Safety
+/// - The ownership of the allocated memory for `token_ids` and `tokens` is transferred to the caller.
+/// - The caller **must** free the allocated memory using the `free_tokenization_result` function to avoid memory leaks.
+/// - The `text` pointer must be a valid null-terminated C string.
+#[no_mangle]
+pub extern "C" fn tokenize_text(text: *const c_char, max_length: i32) -> TokenizationResult {
+    let text = unsafe {
+        match CStr::from_ptr(text).to_str() {
+            Ok(s) => s,
+            Err(_) => return TokenizationResult {
+                token_ids: std::ptr::null_mut(),
+                token_count: 0,
+                tokens: std::ptr::null_mut(),
+                error: true
+            },
+        }
+    };
+
+    let bert_opt = BERT_SIMILARITY.lock().unwrap();
+    let bert = match &*bert_opt {
+        Some(b) => b,
+        None => {
+            eprintln!("BERT model not initialized");
+            return TokenizationResult {
+                token_ids: std::ptr::null_mut(),
+                token_count: 0,
+                tokens: std::ptr::null_mut(),
+                error: true
+            };
+        }
+    };
+
+    let max_length_opt = if max_length <= 0 { None } else { Some(max_length as usize) };
+    match bert.tokenize_text(text, max_length_opt) {
+        Ok((token_ids, tokens)) => {
+            let count = token_ids.len() as i32;
+            
+            // Allocate memory for token IDs
+            let ids_ptr = token_ids.as_ptr() as *mut i32;
+            
+            // Allocate memory for tokens
+            let c_tokens: Vec<*mut c_char> = tokens.iter()
+                .map(|s| CString::new(s.as_str()).unwrap().into_raw())
+                .collect();
+            
+            let tokens_ptr = c_tokens.as_ptr() as *mut *mut c_char;
+            
+            // Don't drop the vectors - Go will own the memory now
+            std::mem::forget(token_ids);
+            std::mem::forget(c_tokens);
+            
+            TokenizationResult {
+                token_ids: ids_ptr,
+                token_count: count,
+                tokens: tokens_ptr,
+                error: false
+            }
+        },
+        Err(e) => {
+            eprintln!("Error tokenizing text: {}", e);
+            TokenizationResult {
+                token_ids: std::ptr::null_mut(),
+                token_count: 0,
+                tokens: std::ptr::null_mut(),
+                error: true
+            }
+        }
+    }
+}
+
+// Free tokenization result allocated by Rust
+#[no_mangle]
+pub extern "C" fn free_tokenization_result(result: TokenizationResult) {
+    if !result.token_ids.is_null() && result.token_count > 0 {
+        unsafe {
+            // Reconstruct and drop the token_ids vector
+            let _ids_vec = Vec::from_raw_parts(result.token_ids, result.token_count as usize, result.token_count as usize);
+            
+            // Reconstruct and drop each token string
+            if !result.tokens.is_null() {
+                let tokens_slice = std::slice::from_raw_parts(result.tokens, result.token_count as usize);
+                for &token_ptr in tokens_slice {
+                    if !token_ptr.is_null() {
+                        let _ = CString::from_raw(token_ptr);
+                    }
+                }
+                
+                // Reconstruct and drop the tokens vector
+                let _tokens_vec = Vec::from_raw_parts(result.tokens, result.token_count as usize, result.token_count as usize);
+            }
+        }
     }
 }
 
@@ -203,7 +339,7 @@ pub struct EmbeddingResult {
 
 // Get embedding for a text (called from Go)
 #[no_mangle]
-pub extern "C" fn get_text_embedding(text: *const c_char) -> EmbeddingResult {
+pub extern "C" fn get_text_embedding(text: *const c_char, max_length: i32) -> EmbeddingResult {
     let text = unsafe {
         match CStr::from_ptr(text).to_str() {
             Ok(s) => s,
@@ -228,7 +364,8 @@ pub extern "C" fn get_text_embedding(text: *const c_char) -> EmbeddingResult {
         }
     };
 
-    match bert.get_embedding(text) {
+    let max_length_opt = if max_length <= 0 { None } else { Some(max_length as usize) };
+    match bert.get_embedding(text, max_length_opt) {
         Ok(embedding) => {
             match embedding.flatten_all() {
                 Ok(flat_embedding) => {
@@ -271,7 +408,7 @@ pub extern "C" fn get_text_embedding(text: *const c_char) -> EmbeddingResult {
 
 // Calculate similarity between two texts (called from Go)
 #[no_mangle]
-pub extern "C" fn calculate_similarity(text1: *const c_char, text2: *const c_char) -> f32 {
+pub extern "C" fn calculate_similarity(text1: *const c_char, text2: *const c_char, max_length: i32) -> f32 {
     let text1 = unsafe {
         match CStr::from_ptr(text1).to_str() {
             Ok(s) => s,
@@ -295,7 +432,8 @@ pub extern "C" fn calculate_similarity(text1: *const c_char, text2: *const c_cha
         }
     };
 
-    match bert.calculate_similarity(text1, text2) {
+    let max_length_opt = if max_length <= 0 { None } else { Some(max_length as usize) };
+    match bert.calculate_similarity(text1, text2, max_length_opt) {
         Ok(similarity) => similarity,
         Err(e) => {
             eprintln!("Error calculating similarity: {}", e);
@@ -309,7 +447,8 @@ pub extern "C" fn calculate_similarity(text1: *const c_char, text2: *const c_cha
 pub extern "C" fn find_most_similar(
     query: *const c_char, 
     candidates_ptr: *const *const c_char,
-    num_candidates: i32
+    num_candidates: i32,
+    max_length: i32
 ) -> SimilarityResult {
     let query = unsafe {
         match CStr::from_ptr(query).to_str() {
@@ -342,7 +481,8 @@ pub extern "C" fn find_most_similar(
         }
     };
 
-    match bert.find_most_similar(query, &candidates) {
+    let max_length_opt = if max_length <= 0 { None } else { Some(max_length as usize) };
+    match bert.find_most_similar(query, &candidates, max_length_opt) {
         Ok((idx, score)) => SimilarityResult { 
             index: idx as i32, 
             score 

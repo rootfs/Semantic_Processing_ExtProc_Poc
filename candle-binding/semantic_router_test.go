@@ -2,8 +2,11 @@ package candle_binding
 
 import (
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,7 +103,7 @@ func initBERTModel(t *testing.T, modelID string, useCPU bool) bool {
 	}
 
 	// Do a quick test to verify it works
-	score := CalculateSimilarity("test", "test")
+	score := CalculateSimilarityDefault("test", "test")
 	if score < 0 {
 		t.Logf("Model initialization succeeded but similarity calculation failed")
 		return false
@@ -108,6 +111,67 @@ func initBERTModel(t *testing.T, modelID string, useCPU bool) bool {
 
 	fmt.Printf("Model successfully initialized\n")
 	return true
+}
+
+// TestTokenizeNorvigText tests downloading and tokenizing text from norvig.com/big.txt
+func TestTokenizeNorvigText(t *testing.T) {
+	// Initialize a small model for tokenization
+	modelID := "sentence-transformers/all-MiniLM-L6-v2"
+	if !initBERTModel(t, modelID, true) { // Use CPU for simplicity
+		t.Fatal("Failed to initialize model for tokenization test")
+	}
+
+	// Download content from norvig.com
+	norvigURL := "https://norvig.com/big.txt"
+	resp, err := http.Get(norvigURL)
+	if err != nil {
+		t.Fatalf("Failed to download text content: %v", err)
+	}
+	defer resp.Body.Close()
+
+	content, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read text content: %v", err)
+	}
+
+	// Get text content
+	textContent := string(content)
+
+	// Tokenize the content
+	tokenResult, err := TokenizeTextDefault(textContent)
+	if err != nil {
+		t.Fatalf("Failed to tokenize Norvig text content: %v", err)
+	}
+
+	// Print statistics
+	t.Logf("Successfully tokenized text from norvig.com/big.txt")
+	t.Logf("Total tokens: %d", len(tokenResult.TokenIDs))
+
+	// Try with a smaller max_length to test the parameter
+	tokenResultSmaller, err := TokenizeText(textContent[:1000], 512)
+	if err != nil {
+		t.Fatalf("Failed to tokenize with smaller max_length: %v", err)
+	}
+	t.Logf("Tokenized with max_length=512, tokens: %d", len(tokenResultSmaller.TokenIDs))
+
+	// Write tokens to a file
+	outputFile := "/tmp/norvig_big_tokens.txt"
+	var output strings.Builder
+
+	output.WriteString(fmt.Sprintf("Tokenization of Norvig big.txt\n"))
+	output.WriteString(fmt.Sprintf("Total tokens: %d\n\n", len(tokenResult.TokenIDs)))
+	output.WriteString(fmt.Sprintf("TOKEN_ID\tTOKEN\n"))
+
+	for i, token := range tokenResult.Tokens {
+		output.WriteString(fmt.Sprintf("%d\t%s\n", tokenResult.TokenIDs[i], token))
+	}
+
+	err = ioutil.WriteFile(outputFile, []byte(output.String()), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write tokens to file: %v", err)
+	}
+
+	t.Logf("Tokens written to file: %s", outputFile)
 }
 
 // TestModelBenchmarking tests different models for accuracy and performance
@@ -165,12 +229,12 @@ func TestModelBenchmarking(t *testing.T) {
 
 			// Warm up with repeated calls
 			for i := 0; i < 3; i++ {
-				CalculateSimilarity("Warm up", "Warm up")
+				CalculateSimilarityDefault("Warm up", "Warm up")
 			}
 
 			// Measure first inference time
 			initStart := time.Now()
-			CalculateSimilarity("First inference", "First inference")
+			CalculateSimilarityDefault("First inference", "First inference")
 			initDuration := time.Since(initStart)
 			results[modelName][deviceName]["init_ms"] = float64(initDuration.Milliseconds())
 
@@ -182,7 +246,7 @@ func TestModelBenchmarking(t *testing.T) {
 
 			for i, test := range testDataset {
 				start := time.Now()
-				score := CalculateSimilarity(test.text1, test.text2)
+				score := CalculateSimilarityDefault(test.text1, test.text2)
 				latency := time.Since(start)
 				totalLatency += latency
 
@@ -251,7 +315,7 @@ func checkGPUAvailability(t *testing.T) bool {
 	}
 
 	// Try a simple inference to confirm
-	score := CalculateSimilarity("test", "test")
+	score := CalculateSimilarityDefault("test", "test")
 	if score < 0 {
 		t.Log("GPU not available: inference failed")
 		return false

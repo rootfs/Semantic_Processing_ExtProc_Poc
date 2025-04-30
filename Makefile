@@ -76,7 +76,7 @@ else
 endif
 
 # Test the Rust library
-test-binding:
+test-binding: rust
 	@echo "Running Go tests with static library..."
 ifeq ($(USE_CONTAINER),true)
 	$(RUN_PREFIX) -d $(IMAGE_NAME) sleep infinity

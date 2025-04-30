@@ -62,7 +62,7 @@ func (c *SemanticCache) AddPendingRequest(model string, query string, requestBod
 	}
 
 	// Generate embedding for the query
-	embedding, err := candle_binding.GetEmbedding(query)
+	embedding, err := candle_binding.GetEmbedding(query, 512)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate embedding: %w", err)
 	}
@@ -129,7 +129,7 @@ func (c *SemanticCache) AddEntry(model string, query string, requestBody, respon
 	}
 
 	// Generate embedding for the query
-	embedding, err := candle_binding.GetEmbedding(query)
+	embedding, err := candle_binding.GetEmbedding(query, 512)
 	if err != nil {
 		return fmt.Errorf("failed to generate embedding: %w", err)
 	}
@@ -172,7 +172,7 @@ func (c *SemanticCache) FindSimilar(model string, query string) ([]byte, bool, e
 	}
 
 	// Generate embedding for the query
-	queryEmbedding, err := candle_binding.GetEmbedding(query)
+	queryEmbedding, err := candle_binding.GetEmbedding(query, 512)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to generate embedding: %w", err)
 	}

@@ -428,7 +428,7 @@ func (r *OpenAIRouter) findBestModelMatch(query string) string {
 	}
 
 	// Use BERT to find the most similar task description
-	result := candle_binding.FindMostSimilar(query, r.TaskDescriptions)
+	result := candle_binding.FindMostSimilarDefault(query, r.TaskDescriptions)
 	log.Printf("Similarity search result: index=%d, score=%.4f", result.Index, result.Score)
 
 	if result.Index < 0 || result.Score < r.Config.BertModel.Threshold {
