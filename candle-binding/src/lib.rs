@@ -203,7 +203,12 @@ impl BertSimilarity {
     }
 }
 
-// Tokenize text (called from Go)
+/// Tokenize the input text and return a `TokenizationResult` containing token IDs and tokens.
+///
+/// # Safety
+/// - The ownership of the allocated memory for `token_ids` and `tokens` is transferred to the caller.
+/// - The caller **must** free the allocated memory using the `free_tokenization_result` function to avoid memory leaks.
+/// - The `text` pointer must be a valid null-terminated C string.
 #[no_mangle]
 pub extern "C" fn tokenize_text(text: *const c_char, max_length: i32) -> TokenizationResult {
     let text = unsafe {
