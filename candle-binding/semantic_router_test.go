@@ -152,7 +152,7 @@ func TestTokenizeNorvigText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to tokenize with smaller max_length: %v", err)
 	}
-	t.Logf("Tokenized with max_length=128, tokens: %d", len(tokenResultSmaller.TokenIDs))
+	t.Logf("Tokenized with max_length=512, tokens: %d", len(tokenResultSmaller.TokenIDs))
 
 	// Write tokens to a file
 	outputFile := "/tmp/norvig_big_tokens.txt"
