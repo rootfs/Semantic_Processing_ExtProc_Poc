@@ -5,7 +5,7 @@ bert_model:
 
 # Classifier configuration for text classification
 classifier:
-  model_id: "classifier_model_fine_tuning/category_classifier_linear_model"
+  model_id: "HuaminChen/category_classifier_linear_model"
   threshold: 0.1
   use_cpu: true
   category_mapping_path: "config/category_mapping.json"
