@@ -38,3 +38,50 @@ make test-prompt
 
 This will send curl requests simulating different types of user prompts (Math, Creative Writing, General) to the Envoy endpoint (`http://localhost:8801`). The router should direct these to the appropriate backend model configured in `config/config.yaml`.
 
+## Testing
+
+A comprehensive test suite is available to validate the functionality of the Semantic Router. The tests follow the data flow through the system, from client request to routing decision.
+
+### Prerequisites
+
+Install test dependencies:
+```bash
+pip install -r tests/requirements.txt
+```
+
+### Running Tests
+
+Make sure both the Envoy proxy and Router are running:
+```bash
+make run-envoy  # In one terminal
+make run-router  # In another terminal
+```
+
+Run all tests in sequence:
+```bash
+python tests/run_all_tests.py
+```
+
+Run a specific test:
+```bash
+python tests/00-client-request-test.py
+```
+
+Run only tests matching a pattern:
+```bash
+python tests/run_all_tests.py --pattern "0*-*.py"
+```
+
+Check if services are running without running tests:
+```bash
+python tests/run_all_tests.py --check-only
+```
+
+The test suite includes:
+- Basic client request tests
+- Envoy ExtProc interaction tests
+- Router classification tests
+- Semantic cache tests
+- Category-specific tests
+- Metrics validation tests
+
